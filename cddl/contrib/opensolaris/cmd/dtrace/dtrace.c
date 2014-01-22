@@ -30,6 +30,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/capability.h>
 
 #include <dtrace.h>
 #include <stdlib.h>
@@ -322,6 +323,7 @@ dof_prune(const char *fname)
 	size_t sz, i, j, mark, len;
 	char *buf;
 	int msg = 0, fd;
+	cap_rights_t     rights;
 
 	if ((fd = open(fname, O_RDONLY)) == -1) {
 		/*
@@ -330,6 +332,10 @@ dof_prune(const char *fname)
 		if (errno != ENOENT)
 			fatal("failed to open %s", fname);
 		return;
+	}
+	cap_rights_init(&rights, CAP_READ);
+	if (cap_rights_limit(fd, &rights) < 0 && errno != ENOSYS) {
+		error("can't limit fd: %m");
 	}
 
 	if (fstat(fd, &sbuf) == -1)
@@ -346,6 +352,11 @@ dof_prune(const char *fname)
 
 	if ((fd = open(fname, O_WRONLY | O_TRUNC)) == -1)
 		fatal("failed to open %s for writing", fname);
+
+	cap_rights_init(&rights, CAP_WRITE);
+	if (cap_rights_limit(fd, &rights) < 0 && errno != ENOSYS) {
+		error("can't limit fd: %m");
+	}
 
 	len = strlen("dof-data-");
 
@@ -405,9 +416,14 @@ etcsystem_prune(void)
 	char *buf, *start, *end;
 	int fd;
 	char *fname = g_etcfile, *tmpname;
+	cap_rights_t     rights;
 
 	if ((fd = open(fname, O_RDONLY)) == -1)
 		fatal("failed to open %s", fname);
+	cap_rights_init(&rights, CAP_READ);
+	if (cap_rights_limit(fd, &rights) < 0 && errno != ENOSYS) {
+		error("can't limit fd: %m");
+	}
 
 	if (fstat(fd, &sbuf) == -1)
 		fatal("failed to fstat %s", fname);
@@ -453,6 +469,11 @@ etcsystem_prune(void)
 	if ((fd = open(tmpname,
 	    O_WRONLY | O_CREAT | O_EXCL, sbuf.st_mode)) == -1)
 		fatal("failed to create %s", tmpname);
+
+	cap_rights_init(&rights, CAP_WRITE);
+	if (cap_rights_limit(fd, &rights) < 0 && errno != ENOSYS) {
+		error("can't limit fd: %m");
+	}
 
 	if (write(fd, buf, strlen(buf)) < strlen(buf)) {
 		(void) unlink(tmpname);
@@ -1350,10 +1371,16 @@ main(int argc, char *argv[])
 		int fd;
 		Elf *elf;
 		GElf_Ehdr ehdr;
+		cap_rights_t rights;
 
 		for (i = 1; i < g_argc; i++) {
 			if ((fd = open64(g_argv[i], O_RDONLY)) == -1)
 				break;
+
+			cap_rights_init(&rights, CAP_READ);
+			if (cap_rights_limit(fd, &rights) < 0 && errno != ENOSYS) {
+				error("can't limit fd: %m");
+			}
 
 			if ((elf = elf_begin(fd, ELF_C_READ, NULL)) == NULL) {
 				(void) close(fd);
@@ -1398,8 +1425,8 @@ main(int argc, char *argv[])
 			continue;
 		}
 
-		fatal("failed to initialize dtrace: %s\n",
-		    dtrace_errmsg(NULL, err));
+		fatal("failed to initialize dtrace: %s %s %d\n",
+			  dtrace_errmsg(NULL, err), __FILE__, __LINE__);
 	}
 
 #if defined(__i386__)
@@ -1835,6 +1862,9 @@ main(int argc, char *argv[])
 	 */
 	if (g_total == 0 && !g_grabanon && !(g_cflags & DTRACE_C_ZDEFS))
 		dfatal("no probes %s\n", g_cmdc ? "matched" : "specified");
+
+	if (cap_enter() < 0 && errno != ENOSYS)
+		error("can't enter capability mode: %m");
 
 	/*
 	 * Start tracing.  Once we dtrace_go(), reload any options that affect
